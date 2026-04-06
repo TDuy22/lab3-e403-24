@@ -27,19 +27,19 @@ class ReActAgent:
             "You are a Smart Checkout ReAct Agent.\n"
             "You can only use these tools:\n"
             f"{tool_descriptions}\n\n"
+            "STRICT OUTPUT FORMAT — output only ONE JSON object per step, no markdown, no extra text:\n"
+            "When calling a tool:\n"
+            '  {"type": "action", "tool": "<tool_name>", "args": {"<param>": <value>}}\n'
+            "When the answer is ready:\n"
+            '  {"type": "final", "answer": "<your friendly response>"}\n\n'
             "Rules:\n"
-            "- If you need a tool, output exactly:\n"
-            "  Thought: ...\n"
-            "  Action: tool_name(arguments)\n"
-            "- Output exactly one Action line per step.\n"
+            "- Output ONLY the JSON object. No markdown fences, no Thought/Action text.\n"
             "- Do NOT write Observation by yourself.\n"
             "- Never fabricate tool results.\n"
             "- Use only the listed tool names.\n"
-            "- Never use markdown code fences.\n"
-            "- If the user asks an off-topic question, immediately refuse by starting with: Final Answer: [Your apology]\n"
-            "- When enough information is available for a checkout, output:\n"
-            "  Final Answer: [Your friendly response here]\n\n"
-            "For valid checkout requests, your Final Answer MUST be formatted as a friendly, user-readable summary or receipt (e.g., using bullet points) and clearly show ALL of the following details:\n"
+            "- If the user asks an off-topic question, immediately output:\n"
+            '  {"type": "final", "answer": "Sorry, I only support smart checkout requests."}\n'
+            "For valid checkout requests, the Final Answer MUST show ALL of:\n"
             "- Item name & Quantity\n"
             "- Unit Price & Subtotal (VND)\n"
             "- Discount applied (%), Discount Amount (VND), & Discounted Subtotal (VND)\n"
@@ -144,9 +144,29 @@ class ReActAgent:
                 },
             )
 
+            # --- v2: Try Pydantic/JSON parsing first (from parsing.py) ---
+            from src.agent.parsing import parse_message
+            msg = parse_message(content)
+
+            if msg is not None:
+                if msg.type == "final":
+                    logger.log_event("AGENT_END", {"steps": step_no, "status": "success", "parser": "json_v2"})
+                    return f"Final Answer: {msg.answer.strip()}"
+                # msg.type == "action"
+                tool_name = msg.tool
+                observation = self._execute_tool_json(tool_name, msg.args)
+                logger.log_event(
+                    "TOOL_CALL",
+                    {"step": step_no, "tool": tool_name, "raw_args": msg.args, "observation": observation},
+                )
+                current_prompt += f"\n{content}\nObservation: {observation}\n"
+                steps += 1
+                continue
+
+            # --- v1 fallback: regex parsing (backward-compat with text-format LLM output) ---
             final_answer = self.parse_final(content)
             if final_answer:
-                logger.log_event("AGENT_END", {"steps": step_no, "status": "success"})
+                logger.log_event("AGENT_END", {"steps": step_no, "status": "success", "parser": "regex_v1"})
                 return f"Final Answer: {final_answer}"
 
             action = self.parse_action(content)
@@ -181,7 +201,7 @@ class ReActAgent:
 
     def _execute_tool(self, tool_name: str, args: str) -> str:
         """
-        Helper method to execute tools by name.
+        v1: Execute tool using raw string args (regex-parsed).
         """
         tool = next((tool for tool in self.tools if tool.get("name") == tool_name), None)
         if tool is None:
@@ -193,4 +213,21 @@ class ReActAgent:
             return str(output)
         except Exception as exc:
             logger.error(f"Tool execution failed: {tool_name}({args}) -> {exc}", exc_info=False)
+            return f"error=tool_execution_failed, tool={tool_name}, message={str(exc)}"
+
+    def _execute_tool_json(self, tool_name: str, args_dict: dict) -> str:
+        """
+        v2: Execute tool using structured dict args (Pydantic-parsed from parsing.py).
+        """
+        from src.agent.parsing import parse_args_for_tool as json_parse_args
+        tool = next((t for t in self.tools if t.get("name") == tool_name), None)
+        if tool is None:
+            return f"error=unknown_tool, tool={tool_name}"
+
+        try:
+            parsed_args = json_parse_args(tool_name, args_dict)
+            output = tool["func"](*parsed_args)
+            return str(output)
+        except Exception as exc:
+            logger.error(f"Tool execution failed (json): {tool_name}({args_dict}) -> {exc}", exc_info=False)
             return f"error=tool_execution_failed, tool={tool_name}, message={str(exc)}"
