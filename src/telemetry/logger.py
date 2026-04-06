@@ -12,17 +12,35 @@ class IndustryLogger:
     def __init__(self, name: str = "AI-Lab-Agent", log_dir: str = "logs"):
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.INFO)
-        
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
+        self.logger.propagate = False
 
-        # File Handler (JSON)
-        log_file = os.path.join(log_dir, f"{datetime.now().strftime('%Y-%m-%d')}.log")
-        file_handler = logging.FileHandler(log_file)
-        
+        # Resolve log directory to an absolute path so logs are written inside the repo
+        # regardless of the current working directory (Streamlit/CLI can differ).
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        resolved_dir = os.getenv("LOG_DIR", log_dir).strip() or "logs"
+        if not os.path.isabs(resolved_dir):
+            resolved_dir = os.path.join(repo_root, resolved_dir)
+
+        os.makedirs(resolved_dir, exist_ok=True)
+
+        # Avoid duplicate handlers if this module is imported multiple times.
+        if self.logger.handlers:
+            return
+
+        # File Handler (JSON lines)
+        log_file = os.path.join(resolved_dir, f"{datetime.now().strftime('%Y-%m-%d')}.log")
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setLevel(logging.INFO)
+
         # Console Handler
         console_handler = logging.StreamHandler()
-        
+        console_handler.setLevel(logging.INFO)
+
+        # Keep raw JSON on both sinks (one line per event)
+        formatter = logging.Formatter("%(message)s")
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
 
