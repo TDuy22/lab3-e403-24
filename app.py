@@ -38,7 +38,6 @@ def _build_provider(provider_name: str, model_name: str):
     raise ValueError(f"Unknown provider: {provider_name}")
 
 st.sidebar.title("Configuration")
-mode = st.sidebar.radio("Select Mode", ["Basic Chatbot", "ReAct Agent"])
 
 default_provider = os.getenv("DEFAULT_PROVIDER", "openai").lower()
 if default_provider == "gemini":
@@ -48,102 +47,70 @@ provider_name = st.sidebar.selectbox("LLM Provider", ["openai", "google", "local
 model_name = st.sidebar.text_input("Model Name", value=os.getenv("DEFAULT_MODEL", "gpt-4o"))
 max_steps = st.sidebar.slider("Max Steps (ReAct)", min_value=1, max_value=10, value=5)
 
-st.title(f"🤖 {mode} Demo")
+st.title("🤖 Chatbot vs ReAct Agent Comparison")
 st.markdown("Compare the reasoning capability of a standard Chatbot vs a ReAct Agent with Tools.")
-
-# Demo Prompts
-st.sidebar.subheader("Demo Scenarios")
-if st.sidebar.button("Scenario 1: Happy Path"):
-    st.session_state.demo_input = "item=iPhone; qty=2; coupon=WINNER; city=Hanoi"
-if st.sidebar.button("Scenario 2: Out of stock"):
-    st.session_state.demo_input = "item=MacBook; qty=999; coupon=SAVE10; city=HCMC"
-if st.sidebar.button("Scenario 3: Simple Chat"):
-    st.session_state.demo_input = "What is the capital of Vietnam?"
-if st.sidebar.button("Clear Chat History"):
-    st.session_state.messages = []
 
 user_input = st.chat_input("Enter your query...")
 
-if "demo_input" in st.session_state:
-    user_input = st.session_state.demo_input
-    del st.session_state.demo_input
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-for msg in st.session_state.messages:
-    if msg["role"] == "user":
-        st.chat_message("user").write(msg["content"])
-    else:
-         with st.chat_message("assistant"):
-            st.write(msg["content"])
-            if "metrics" in msg:
-                cols = st.columns(4)
-                cols[0].metric("Tokens", msg["metrics"]["tokens"])
-                cols[1].metric("Latency", f"{msg['metrics']['latency']} ms")
-                cols[2].metric("Steps", msg["metrics"]["steps"])
-                cols[3].metric("Cost", f"${msg['metrics']['cost']:.4f}")
-            if "history" in msg and msg["history"]:
-                with st.expander(f"Show {msg['mode']} Trace / History"):
-                    for step in msg["history"]:
-                        st.text(f"Step {step['step']}:\n{step['response']}")
-
 if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    st.chat_message("user").write(user_input)
+    st.markdown(f"**You:** {user_input}")
     
-    with st.chat_message("assistant"):
-        status_placeholder = st.empty()
-        status_placeholder.info("Processing...")
+    # ---------------------------------------------------------
+    # TOP: Basic Chatbot
+    # ---------------------------------------------------------
+    st.subheader("Basic Chatbot")
+    chatbot_placeholder = st.empty()
+    chatbot_placeholder.info("Basic Chatbot is processing...")
+    
+    try:
+        llm_chat = _build_provider(provider_name, model_name)
+        tracker.session_metrics = [] # Reset metrics
         
-        try:
-            llm = _build_provider(provider_name, model_name)
-            
-            # Reset metrics for this run
-            tracker.session_metrics = []
-            start_time = time.time()
-            
-            if mode == "Basic Chatbot":
-                agent = SimpleChatbot(llm=llm)
-            else:
-                agent = ReActAgent(llm=llm, tools=TOOLS, max_steps=max_steps)
-                
-            response = agent.run(user_input)
-            
-            # Aggregate metrics
-            total_tokens = sum(m.get("total_tokens", 0) for m in tracker.session_metrics)
-            total_cost = sum(m.get("cost_estimate", 0) for m in tracker.session_metrics)
-            total_latency = int((time.time() - start_time) * 1000)
-            steps = len(agent.history)
-            
-            metrics = {
-                "tokens": total_tokens,
-                "latency": total_latency,
-                "steps": steps,
-                "cost": total_cost
-            }
-            
-            status_placeholder.empty()
-            st.write(response)
-            
-            cols = st.columns(4)
-            cols[0].metric("Tokens", total_tokens)
-            cols[1].metric("Latency", f"{total_latency} ms")
-            cols[2].metric("Steps", steps)
-            cols[3].metric("Cost", f"${total_cost:.4f}")
-            
-            if agent.history:
-                with st.expander(f"Show {mode} Trace / History"):
-                    for step in agent.history:
-                        st.text(f"Step {step['step']}:\n{step['response']}")
-            
-            st.session_state.messages.append({
-                "role": "assistant", 
-                "content": response,
-                "metrics": metrics,
-                "history": agent.history,
-                "mode": mode
-            })
-            
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
+        start_time_chat = time.time()
+        chat_agent = SimpleChatbot(llm=llm_chat)
+        chat_response = chat_agent.run(user_input)
+        chat_latency = int((time.time() - start_time_chat) * 1000)
+        
+        chat_tokens = sum(m.get("total_tokens", 0) for m in tracker.session_metrics)
+        chat_cost = sum(m.get("cost_estimate", 0) for m in tracker.session_metrics)
+        
+        chatbot_placeholder.empty()
+        st.write(chat_response)
+        st.markdown(f"<span style='font-size:0.8em; color:gray;'>Tokens: {chat_tokens} | Latency: {chat_latency}ms | Steps: 1 | Cost: ${chat_cost:.4f}</span>", unsafe_allow_html=True)
+        
+    except Exception as e:
+        chatbot_placeholder.error(f"Error: {str(e)}")
+
+    st.divider()
+
+    # ---------------------------------------------------------
+    # BOTTOM: ReAct Agent
+    # ---------------------------------------------------------
+    st.subheader("ReAct Agent")
+    react_placeholder = st.empty()
+    react_placeholder.info("ReAct Agent is processing...")
+    
+    try:
+        llm_react = _build_provider(provider_name, model_name)
+        tracker.session_metrics = [] # Reset metrics for react
+        
+        start_time_react = time.time()
+        react_agent = ReActAgent(llm=llm_react, tools=TOOLS, max_steps=max_steps)
+        react_response = react_agent.run(user_input)
+        react_latency = int((time.time() - start_time_react) * 1000)
+        
+        react_tokens = sum(m.get("total_tokens", 0) for m in tracker.session_metrics)
+        react_cost = sum(m.get("cost_estimate", 0) for m in tracker.session_metrics)
+        react_steps = len(react_agent.history)
+        
+        react_placeholder.empty()
+        st.write(react_response)
+        st.markdown(f"<span style='font-size:0.8em; color:gray;'>Tokens: {react_tokens} | Latency: {react_latency}ms | Steps: {react_steps} | Cost: ${react_cost:.4f}</span>", unsafe_allow_html=True)
+        
+        if react_agent.history:
+            with st.expander("Show ReAct Trace"):
+                for step_info in react_agent.history:
+                    st.text(f"Step {step_info['step']}:\n{step_info['response']}")
+                    
+    except Exception as e:
+        react_placeholder.error(f"Error: {str(e)}")
