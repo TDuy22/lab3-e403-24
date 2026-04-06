@@ -36,12 +36,16 @@ class ReActAgent:
             "- Never fabricate tool results.\n"
             "- Use only the listed tool names.\n"
             "- Never use markdown code fences.\n"
-            "- When enough information is available, output:\n"
-            "  Final Answer: ...\n\n"
-            "Final Answer must include:\n"
-            "item, qty, unit_price_vnd, subtotal_vnd, "
-            "discount_percent, discount_amount_vnd, discounted_subtotal_vnd, "
-            "shipping_fee_vnd, total_vnd, stock_status.\n"
+            "- If the user asks an off-topic question, immediately refuse by starting with: Final Answer: [Your apology]\n"
+            "- When enough information is available for a checkout, output:\n"
+            "  Final Answer: [Your friendly response here]\n\n"
+            "For valid checkout requests, your Final Answer MUST be formatted as a friendly, user-readable summary or receipt (e.g., using bullet points) and clearly show ALL of the following details:\n"
+            "- Item name & Quantity\n"
+            "- Unit Price & Subtotal (VND)\n"
+            "- Discount applied (%), Discount Amount (VND), & Discounted Subtotal (VND)\n"
+            "- Shipping Fee (VND)\n"
+            "- Final Total (VND)\n"
+            "- Stock status (e.g., In stock / Not enough)\n"
         )
 
     def parse_action(self, text: str) -> Optional[Tuple[str, str]]:

@@ -1,13 +1,15 @@
 import os
 import sys
 from dotenv import load_dotenv
+import pytest
 
 # Add src to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.core.local_provider import LocalProvider
-
 def test_local_phi3():
+    pytest.importorskip("llama_cpp", reason="llama-cpp-python is required for local model tests")
+    from src.core.local_provider import LocalProvider
+
     load_dotenv()
     model_path = os.getenv("LOCAL_MODEL_PATH", "./models/Phi-3-mini-4k-instruct-q4.gguf")
     
