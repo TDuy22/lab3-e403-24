@@ -1,6 +1,5 @@
-import os
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from src.core.llm_provider import LLMProvider
 from src.telemetry.logger import logger
 
@@ -10,6 +9,12 @@ class ReActAgent:
     Students should implement the core loop logic and tool execution.
     """
     
+    ACTION_RE = re.compile(
+        r"^\s*Action:\s*([a-zA-Z_]\w*)\s*\((.*)\)\s*$",
+        re.MULTILINE,
+    )
+    FINAL_RE = re.compile(r"Final Answer:\s*(.*)", re.DOTALL)
+
     def __init__(self, llm: LLMProvider, tools: List[Dict[str, Any]], max_steps: int = 5):
         self.llm = llm
         self.tools = tools
@@ -17,58 +22,164 @@ class ReActAgent:
         self.history = []
 
     def get_system_prompt(self) -> str:
-        """
-        TODO: Implement the system prompt that instructs the agent to follow ReAct.
-        Should include:
-        1.  Available tools and their descriptions.
-        2.  Format instructions: Thought, Action, Observation.
-        """
         tool_descriptions = "\n".join([f"- {t['name']}: {t['description']}" for t in self.tools])
-        return f"""
-        You are an intelligent assistant. You have access to the following tools:
-        {tool_descriptions}
+        return (
+            "You are a Smart Checkout ReAct Agent.\n"
+            "You can only use these tools:\n"
+            f"{tool_descriptions}\n\n"
+            "Rules:\n"
+            "- If you need a tool, output exactly:\n"
+            "  Thought: ...\n"
+            "  Action: tool_name(arguments)\n"
+            "- Output exactly one Action line per step.\n"
+            "- Do NOT write Observation by yourself.\n"
+            "- Never fabricate tool results.\n"
+            "- Use only the listed tool names.\n"
+            "- Never use markdown code fences.\n"
+            "- When enough information is available, output:\n"
+            "  Final Answer: ...\n\n"
+            "Final Answer must include:\n"
+            "item, qty, unit_price_vnd, subtotal_vnd, "
+            "discount_percent, discount_amount_vnd, discounted_subtotal_vnd, "
+            "shipping_fee_vnd, total_vnd, stock_status.\n"
+        )
 
-        Use the following format:
-        Thought: your line of reasoning.
-        Action: tool_name(arguments)
-        Observation: result of the tool call.
-        ... (repeat Thought/Action/Observation if needed)
-        Final Answer: your final response.
-        """
+    def parse_action(self, text: str) -> Optional[Tuple[str, str]]:
+        match = self.ACTION_RE.search(text or "")
+        if not match:
+            return None
+        return match.group(1).strip(), match.group(2).strip()
+
+    def parse_final(self, text: str) -> Optional[str]:
+        match = self.FINAL_RE.search(text or "")
+        if not match:
+            return None
+        return match.group(1).strip()
+
+    @staticmethod
+    def _strip_quotes(value: str) -> str:
+        value = value.strip()
+        if len(value) >= 2 and (
+            (value[0] == '"' and value[-1] == '"')
+            or (value[0] == "'" and value[-1] == "'")
+        ):
+            return value[1:-1].strip()
+        return value
+
+    def parse_args_for_tool(self, tool_name: str, raw: str) -> List[Any]:
+        raw = (raw or "").strip()
+
+        if tool_name in {"check_stock", "get_discount"}:
+            # Support both: check_stock("iPhone") and check_stock(item_name="iPhone")
+            arg = raw.split("=", 1)[-1].strip() if "=" in raw else raw
+            return [self._strip_quotes(arg)]
+
+        if tool_name == "calc_shipping":
+            # Support both positional and named arguments.
+            parts = [part.strip() for part in raw.split(",", 1)]
+            if len(parts) != 2:
+                raise ValueError("calc_shipping requires 2 arguments")
+
+            left = parts[0].split("=", 1)[-1].strip()
+            right = parts[1].split("=", 1)[-1].strip()
+
+            weight = float(left)
+            destination = self._strip_quotes(right)
+            return [weight, destination]
+
+        raise ValueError(f"unsupported_tool={tool_name}")
 
     def run(self, user_input: str) -> str:
-        """
-        TODO: Implement the ReAct loop logic.
-        1. Generate Thought + Action.
-        2. Parse Action and execute Tool.
-        3. Append Observation to prompt and repeat until Final Answer.
-        """
         logger.log_event("AGENT_START", {"input": user_input, "model": self.llm.model_name})
-        
-        current_prompt = user_input
+
+        current_prompt = f"User input: {user_input}\n"
+        system_prompt = self.get_system_prompt()
         steps = 0
 
         while steps < self.max_steps:
-            # TODO: Generate LLM response
-            # result = self.llm.generate(current_prompt, system_prompt=self.get_system_prompt())
-            
-            # TODO: Parse Thought/Action from result
-            
-            # TODO: If Action found -> Call tool -> Append Observation
-            
-            # TODO: If Final Answer found -> Break loop
-            
+            step_no = steps + 1
+            try:
+                result = self.llm.generate(current_prompt, system_prompt=system_prompt)
+            except Exception as exc:
+                logger.error(f"LLM generate failed at step {step_no}: {exc}", exc_info=False)
+                logger.log_event("AGENT_END", {"steps": steps, "status": "llm_error"})
+                return f"Final Answer: error=llm_failure, message={str(exc)}"
+
+            content = ""
+            usage = None
+            latency_ms = None
+            if isinstance(result, dict):
+                content = str(result.get("content", "")).strip()
+                usage = result.get("usage")
+                latency_ms = result.get("latency_ms")
+            else:
+                content = str(result).strip()
+
+            self.history.append(
+                {
+                    "step": step_no,
+                    "prompt": current_prompt,
+                    "response": content,
+                }
+            )
+
+            logger.log_event(
+                "LLM_STEP",
+                {
+                    "step": step_no,
+                    "response": content,
+                    "usage": usage,
+                    "latency_ms": latency_ms,
+                },
+            )
+
+            final_answer = self.parse_final(content)
+            if final_answer:
+                logger.log_event("AGENT_END", {"steps": step_no, "status": "success"})
+                return f"Final Answer: {final_answer}"
+
+            action = self.parse_action(content)
+            if not action:
+                observation = "error=parse_failed, message=missing_action_or_final_answer"
+                logger.log_event(
+                    "AGENT_PARSE_ERROR",
+                    {"step": step_no, "response": content},
+                )
+                current_prompt += f"\n{content}\nObservation: {observation}\n"
+                steps += 1
+                continue
+
+            tool_name, raw_args = action
+            observation = self._execute_tool(tool_name, raw_args)
+
+            logger.log_event(
+                "TOOL_CALL",
+                {
+                    "step": step_no,
+                    "tool": tool_name,
+                    "raw_args": raw_args,
+                    "observation": observation,
+                },
+            )
+
+            current_prompt += f"\n{content}\nObservation: {observation}\n"
             steps += 1
-            
-        logger.log_event("AGENT_END", {"steps": steps})
-        return "Not implemented. Fill in the TODOs!"
+
+        logger.log_event("AGENT_END", {"steps": steps, "status": "max_steps_exceeded"})
+        return "Final Answer: error=max_steps_exceeded, message=unable_to_reach_final_answer"
 
     def _execute_tool(self, tool_name: str, args: str) -> str:
         """
         Helper method to execute tools by name.
         """
-        for tool in self.tools:
-            if tool['name'] == tool_name:
-                # TODO: Implement dynamic function calling or simple if/else
-                return f"Result of {tool_name}"
-        return f"Tool {tool_name} not found."
+        tool = next((tool for tool in self.tools if tool.get("name") == tool_name), None)
+        if tool is None:
+            return f"error=unknown_tool, tool={tool_name}"
+
+        try:
+            parsed_args = self.parse_args_for_tool(tool_name, args)
+            output = tool["func"](*parsed_args)
+            return str(output)
+        except Exception as exc:
+            logger.error(f"Tool execution failed: {tool_name}({args}) -> {exc}", exc_info=False)
+            return f"error=tool_execution_failed, tool={tool_name}, message={str(exc)}"
