@@ -108,10 +108,17 @@ class ReActAgent:
             content = ""
             usage = None
             latency_ms = None
+            provider_name = "unknown"
             if isinstance(result, dict):
                 content = str(result.get("content", "")).strip()
                 usage = result.get("usage")
                 latency_ms = result.get("latency_ms")
+                provider_name = result.get("provider", "unknown")
+                
+                # Report usage to tracker
+                from src.telemetry.metrics import tracker
+                if usage and latency_ms:
+                    tracker.track_request(provider_name, self.llm.model_name, usage, latency_ms)
             else:
                 content = str(result).strip()
 
