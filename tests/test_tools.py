@@ -6,10 +6,15 @@ from src.tools.shipping import calc_shipping
 
 
 def test_catalog_structure():
-    assert len(CATALOG) == 2
-    assert "iphone" in CATALOG
-    assert CATALOG["iphone"]["unit_price_vnd"] == 25_000_000
-    assert CATALOG["iphone"]["weight_kg_per_unit"] == 0.24
+    assert len(CATALOG) >= 5  # expanded catalog has many items
+    # Spot-check structure of one item
+    sample_key = "iphone_15_pro"
+    assert sample_key in CATALOG
+    sample = CATALOG[sample_key]
+    assert sample["unit_price_vnd"] == 30_000_000
+    assert sample["weight_kg_per_unit"] == 0.21
+    assert "display_name" in sample
+    assert "stock" in sample
 
 
 def test_coupons_structure():
@@ -23,11 +28,30 @@ def test_allowed_cities():
 
 
 def test_check_stock_valid():
-    result = check_stock("iPhone")
-    assert "item=iPhone" in result
-    assert "in_stock=50" in result
-    assert "unit_price_vnd=25000000" in result
-    assert "weight_kg_per_unit=0.24" in result
+    # "iPhone 15 Pro" -> _normalize -> "iphone15pro" -> matches catalog key "iphone_15_pro"
+    result = check_stock("iPhone 15 Pro")
+    assert "item=iPhone 15 Pro" in result
+    assert "in_stock=25" in result
+    assert "unit_price_vnd=30000000" in result
+    assert "weight_kg_per_unit=0.21" in result
+
+
+def test_check_stock_normalization():
+    """
+    Verify fuzzy normalization: all variants below must resolve to the same item.
+    _normalize strips ALL non-alphanumeric chars and lowercases.
+    """
+    variants = [
+        "Xiaomi 14",    # spaced -> "xiaomi14"
+        "xiao mi 14",   # extra space inside brand -> "xiaomi14" (key point)
+        "xiaomi-14",    # hyphen -> "xiaomi14"
+        "XIAOMI_14",    # uppercase + underscore -> "xiaomi14"
+        "Xiaomi14",     # no separator -> "xiaomi14"
+    ]
+    for variant in variants:
+        result = check_stock(variant)
+        assert "error" not in result, f"Expected match for '{variant}', got: {result}"
+        assert "item=Xiaomi 14" in result, f"Wrong item for '{variant}': {result}"
 
 
 def test_check_stock_invalid():
@@ -95,19 +119,19 @@ def test_import_from_tools():
 
 
 def test_happy_path_math_components():
-    stock = check_stock("iPhone")
-    assert "unit_price_vnd=25000000" in stock
+    stock = check_stock("iPhone 15 Pro")
+    assert "unit_price_vnd=30000000" in stock
 
     discount = get_discount("WINNER")
     assert "discount_percent=15" in discount
 
     shipping = calc_shipping(0.48, "Hanoi")
-    assert "shipping_fee_vnd=39600" in shipping
+    assert "shipping_fee_vnd=39600" in shipping  # 30000 + 0.48*20000 = 39600
 
 
 def test_output_single_line_key_value_contract():
     samples = [
-        check_stock("iPhone"),
+        check_stock("iPhone 15 Pro"),  # valid — normalizes to iphone_15_pro
         check_stock("Unknown"),
         get_discount("WINNER"),
         get_discount("NONE"),
