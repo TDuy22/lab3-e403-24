@@ -83,6 +83,11 @@ def parse_args() -> argparse.Namespace:
         help="Override model name from .env",
     )
     parser.add_argument(
+        "--chat",
+        action="store_true",
+        help="Run in interactive chat mode",
+    )
+    parser.add_argument(
         "--max-steps",
         type=int,
         default=5,
@@ -103,8 +108,28 @@ def main() -> int:
         llm = _build_provider(provider_name, model_name)
         tools = _load_tools()
         agent = ReActAgent(llm=llm, tools=tools, max_steps=args.max_steps)
-        result = agent.run(args.input)
-        print(result)
+
+        if args.chat:
+            print("🚀 Interactive Chat Mode Enabled (type 'exit' or 'quit' to end)")
+            while True:
+                try:
+                    user_sys = input("\nYou: ")
+                    if user_sys.strip().lower() in ("exit", "quit"):
+                        break
+                    if not user_sys.strip():
+                        continue
+                    
+                    print("\n🤖 Agent is thinking...")
+                    result = agent.run(user_sys)
+                    print(f"\n{result}")
+                except KeyboardInterrupt:
+                    break
+        else:
+            print(f"🚀 DEMO User Input: {args.input}")
+            print("\n🤖 Agent is thinking...")
+            result = agent.run(args.input)
+            print(f"\n{result}")
+            
         return 0
     except Exception as exc:
         print(f"Runner error: {exc}")
